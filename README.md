@@ -462,6 +462,30 @@ Terraform provisions one EC2 instance using existing AWS resources.
 
 Terraform also reads the existing default VPC, its subnets, and the selected AMI through data sources.
 
+### Automatic SSH Access IP Management
+
+Terraform also manages the existing security group's personal SSH ingress rule without creating or replacing the security group.
+
+- The `hashicorp/http` provider queries `https://checkip.amazonaws.com/` to detect the workstation's current public IPv4 address.
+- Terraform appends `/32` and configures the existing TCP port 22 ingress rule with that address.
+- The existing rule is managed with `aws_vpc_security_group_ingress_rule` and is updated in place when the detected public IP changes.
+- The existing security group is reused. HTTP (port 80) and HTTPS (port 443) rules are not modified by this resource.
+- The GitHub Actions runner's temporary SSH ingress rule is separate and remains managed by the deployment workflow.
+
+The HTTP provider requires outbound internet access during Terraform planning/applying so the current public IP can be detected. If the IP-check endpoint is unavailable, Terraform cannot calculate the desired SSH CIDR and the operation will fail rather than silently using an old address.
+
+#### Import the Existing SSH Rule
+
+The SSH rule must exist in the selected security group before Terraform can manage it. For an existing deployment, identify its security-group rule ID (an ID beginning with `sgr-`) and import it once:
+
+```powershell
+terraform import aws_vpc_security_group_ingress_rule.ssh_my_ip sgr-REPLACE_WITH_EXISTING_RULE_ID
+```
+
+Use the actual rule ID from your AWS account. Do not import the GitHub Actions runner's temporary rule; import only the persistent personal SSH rule for TCP port 22. After importing, review `terraform plan` and confirm that the only security-group change is the SSH source CIDR update before applying.
+
+On subsequent Terraform runs, the public IPv4 address is detected automatically. If it has changed, Terraform updates the imported SSH rule to the newly detected `/32` address.
+
 ### What Terraform Does Not Manage
 
 - VPC and subnet creation.
@@ -794,6 +818,7 @@ When deploying this project in your own AWS account and GitHub repository:
 
 - [ ] Configure the AWS CLI and verify AWS authentication.
 - [ ] Create or identify the required VPC, subnet, security group, and EC2 key pair.
+- [ ] Ensure the existing security group has the required HTTP/HTTPS rules and a persistent personal SSH rule; import that SSH rule into Terraform state before managing it.
 - [ ] Configure the EC2 IAM role and instance profile.
 - [ ] Create the ECR repository.
 - [ ] Create and configure the S3 bucket.
