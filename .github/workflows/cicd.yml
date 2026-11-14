@@ -4,7 +4,7 @@ name: Face Recognition CI/CD
 #     fmt/validate (no backend, no AWS), Docker build + container smoke test (/health).
 # CD  (push to main, or a manual run on main, and ONLY if CI passed):
 #       push image to private ECR  ->  deploy to EC2 with the existing Ansible playbook.
-# Setup needed in GitHub / AWS (secrets, OIDC role): see CICD-README.md
+# Setup needed in GitHub / AWS (secrets, OIDC role): see README.md
 
 on:
   push:
@@ -181,7 +181,7 @@ jobs:
 
       # Optional. GitHub runners have changing IPs, so port 22 is opened to THIS runner only, for
       # the duration of the deployment, and closed again at the end. Skipped unless the repository
-      # variable EC2_SECURITY_GROUP_ID is set (see CICD-README.md).
+      # variable EC2_SECURITY_GROUP_ID is set (see README.md).
       - name: Configure AWS credentials for the temporary SSH rule
         if: vars.EC2_SECURITY_GROUP_ID != ''
         uses: aws-actions/configure-aws-credentials@v6
@@ -206,29 +206,19 @@ jobs:
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
-          EC2_KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
-          test -n "$EC2_HOST" && test -n "$EC2_SSH_PRIVATE_KEY" || { echo "::error::Secrets EC2_HOST and EC2_SSH_PRIVATE_KEY must be set (see CICD-README.md)"; exit 1; }
+          test -n "$EC2_HOST" && test -n "$EC2_SSH_PRIVATE_KEY" || { echo "::error::Secrets EC2_HOST and EC2_SSH_PRIVATE_KEY must be set"; exit 1; }
           install -d -m 700 "$HOME/.ssh"
           printf '%s\n' "$EC2_SSH_PRIVATE_KEY" | tr -d '\r' > "$HOME/.ssh/ec2_deploy_key"
           chmod 600 "$HOME/.ssh/ec2_deploy_key"
-          # SSH host-key checking is ON (ansible/ansible.cfg). The trusted key comes from the secret
-          # EC2_KNOWN_HOSTS (see CICD-README.md). Without it we fall back to ssh-keyscan, which keeps the
-          # pipeline working but does NOT prove the server's identity - so it prints a warning.
-          if [ -n "${EC2_KNOWN_HOSTS:-}" ]; then
-            printf '%s\n' "$EC2_KNOWN_HOSTS" | tr -d '\r' > "$HOME/.ssh/known_hosts"
-          else
-            echo "::warning::Secret EC2_KNOWN_HOSTS is not set - trusting the key returned by ssh-keyscan (not verified). Set the secret to remove this warning."
-            ssh-keyscan -T 10 -t ed25519,ecdsa,rsa "$EC2_HOST" > "$HOME/.ssh/known_hosts" 2>/dev/null || true
-            test -s "$HOME/.ssh/known_hosts" || { echo "::error::Could not obtain the server host key (is port 22 reachable?)"; exit 1; }
-          fi
-          chmod 644 "$HOME/.ssh/known_hosts"
-          # ansible/inventory.ini is git-ignored (it holds your real IP and key path); build it here.
+
+          # ansible/inventory.ini is git-ignored; build it here.
           {
             echo "[face_recognition]"
             echo "face-server ansible_host=${EC2_HOST} ansible_user=ec2-user ansible_ssh_private_key_file=$HOME/.ssh/ec2_deploy_key"
           } > ansible/inventory.ini
+
 
       - name: Deploy the image that was just pushed (existing playbook, unchanged flow)
         env:
