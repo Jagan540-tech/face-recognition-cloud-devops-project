@@ -69,3 +69,18 @@ resource "aws_instance" "app_server" {
     ignore_changes = [ami]
   }
 }
+
+# 5. Automatically detect the current public IPv4 address
+data "http" "my_ip" {
+  url = "https://checkip.amazonaws.com/"
+}
+
+# 6. Manage the existing SSH rule in the existing security group
+resource "aws_vpc_security_group_ingress_rule" "ssh_my_ip" {
+  security_group_id = var.security_group_id
+
+  cidr_ipv4   = "${chomp(data.http.my_ip.response_body)}/32"
+  ip_protocol = "tcp"
+  from_port   = 22
+  to_port     = 22
+}
