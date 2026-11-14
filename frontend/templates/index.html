@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<section class="hero">
+  <h1>FACE RECOGNITION SYSTEM</h1>
+  <p>AI-powered browser-based face detection and recognition</p>
+</section>
+
+<div class="actions">
+  <a class="btn primary" href="/register">Register Person</a>
+  <a class="btn" href="/recognize">Start Recognition</a>
+</div>
+
+<div class="grid two">
+
+  <div class="card">
+    <h2>System Status</h2>
+
+    <div class="status-row">
+      <span>Recognition Engine</span>
+      <span>
+        <i class="dot" id="dotEngine"></i>
+        <b id="txtEngine">Checking…</b>
+      </span>
+    </div>
+
+    <div class="status-row">
+      <span>Camera</span>
+      <span>
+        <i class="dot" id="dotCam"></i>
+        <b id="txtCam">Checking…</b>
+      </span>
+    </div>
+
+    <!-- Kept for JavaScript compatibility, but hidden from users -->
+    <div class="status-row" style="display: none;">
+      <span>Registered Users</span>
+      <b id="txtUsers">0</b>
+    </div>
+
+  </div>
+
+  <div class="card">
+    <h2>How it works</h2>
+    <p style="color:var(--muted);margin:0">
+      Register people using your webcam and use real-time face recognition
+      to identify registered users. Several people can be in the frame at
+      once — each face is detected and matched independently.
+    </p>
+  </div>
+
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+  initHome();
+</script>
+{% endblock %}

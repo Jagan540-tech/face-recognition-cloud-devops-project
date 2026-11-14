@@ -1,0 +1,43 @@
+# VCS, environments, caches
+.git
+.gitignore
+.venv
+venv
+env
+__pycache__
+*.py[cod]
+.pytest_cache
+
+# Private data and local secrets - must never enter an image
+data
+models
+.env
+.env.*
+*.pem
+*.key
+.aws
+
+# Not needed at runtime
+tests
+requirements-dev.txt
+README.md
+CHANGES.md
+Dockerfile
+.dockerignore
+*.log
+*.zip
+
+# Infrastructure and CI files are not part of the image (the Dockerfile copies only what it needs)
+ansible
+terraform
+iam
+docs
+.github
+.gitattributes
+*.md
+*.ps1
+*.tfstate
+*.tfstate.*
+.terraform
+tfplan
+*.tfplan

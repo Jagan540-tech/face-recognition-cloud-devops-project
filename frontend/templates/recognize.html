@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Recognition – Face Recognition{% endblock %}
+{% block content %}
+<div class="grid two" style="grid-template-columns:2fr 1fr;align-items:start">
+  <div class="card">
+    <h2>Live Recognition</h2>
+    <div class="stage">
+      <video id="video" autoplay playsinline muted></video>
+      <canvas id="overlay"></canvas>
+      <div class="placeholder" id="placeholder">Camera is off. Click “Start Recognition”.</div>
+    </div>
+    <div id="msg" class="msg" style="margin-top:12px"></div>
+    <div class="actions" style="justify-content:flex-start;margin:8px 0 0">
+      <button class="btn primary" id="startBtn">Start Recognition</button>
+      <button class="btn danger hidden" id="stopBtn">Stop Recognition</button>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Detected Faces <span id="faceCount" style="color:var(--muted);font-weight:400"></span></h2>
+    <ul class="face-list" id="faceList"><li class="msg">No faces yet.</li></ul>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/recognize.js') }}"></script>{% endblock %}

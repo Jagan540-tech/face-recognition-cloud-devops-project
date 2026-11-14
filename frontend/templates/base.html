@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Face Recognition System{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <nav class="nav">
+    <a class="brand" href="/">Face <span>Recognition</span></a>
+    <div class="nav-links">
+      <a href="/" class="{{ 'active' if page=='home' }}">Home</a>
+      <a href="/register" class="{{ 'active' if page=='register' }}">Register</a>
+      <a href="/recognize" class="{{ 'active' if page=='recognize' }}">Recognition</a>
+      <button id="themeBtn" title="Toggle theme" aria-label="Toggle theme">◐</button>
+    </div>
+  </nav>
+  <main class="container">{% block content %}{% endblock %}</main>
+  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

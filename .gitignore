@@ -1,0 +1,42 @@
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Private biometric data - never commit
+data/known_faces/*
+!data/known_faces/.gitkeep
+data/embeddings/
+# legacy dlib files / encodings from the previous version
+data/models/
+
+# Pretrained models are downloaded by scripts/download_models.py
+models/*.onnx
+models/*.part
+
+# Secrets and keys
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.aws/
+
+# Local infrastructure state and plans (never commit)
+*.tfstate
+*.tfstate.*
+.terraform/
+tfplan
+*.tfplan
+ansible/inventory.ini
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

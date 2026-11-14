@@ -1,0 +1,599 @@
+---
+# Prepare Amazon Linux 2023 EC2 hosts and deploy the face-recognition container from private ECR.
+#
+# Usage (from the repository root, with ANSIBLE_CONFIG set -- see ANSIBLE-DEPLOYMENT-README.md):
+#   ansible-playbook ansible/deploy.yml
+#
+# No AWS keys are used anywhere: ECR access comes from the EC2 instance role.
+
+- name: Prepare EC2 hosts and deploy face-recognition-system from ECR
+  hosts: face_recognition
+  become: true
+  gather_facts: false
+  any_errors_fatal: false
+
+  vars:
+    # Every value below can be overridden per group/host in the inventory or with -e.
+    aws_region: ap-south-1
+    aws_account_id: "080705554676"
+    ecr_repository: face-recognition-system
+    image_tag: latest
+    ecr_registry: "{{ aws_account_id }}.dkr.ecr.{{ aws_region }}.amazonaws.com"
+    ecr_image: "{{ ecr_registry }}/{{ ecr_repository }}:{{ image_tag }}"
+
+    # S3 is the persistent source of truth for registered face data.
+    s3_bucket: jaganops-face-recognition-data-080705554676
+    s3_region: "{{ aws_region }}"
+
+    container_name: face-recognition-system
+    app_port: 5000            # host port
+    app_bind_address: "127.0.0.1"
+    container_port: 5000      # port inside the container (FR_PORT)
+    data_dir: /data           # TEMPORARY scratch inside the container; registration data lives in S3
+    restart_policy: unless-stopped
+    domain_name: facerecognition.jaganops.in
+    # Let's Encrypt expiry-notice address. Not stored in the repository: set it with
+    #   CERTBOT_EMAIL=you@example.com ansible-playbook ...   or   -e certbot_email=you@example.com
+    # (in GitHub Actions: repository variable CERTBOT_EMAIL). Empty = register without an email.
+    certbot_email: "{{ lookup('ansible.builtin.env', 'CERTBOT_EMAIL') }}"
+    health_retries: 24
+    health_delay: 5
+
+    # Adding a user to the docker group is root-equivalent, so it is off by default.
+    add_ssh_user_to_docker_group: false
+
+    # Changes whenever the image, ports, env or restart policy change.
+    deploy_fingerprint: >-
+      {{ [ecr_image, pulled_image_id | default(''), app_bind_address, app_port, container_port,
+          data_dir, s3_bucket, s3_region, restart_policy] | join('|') | hash('sha256') }}
+
+  tasks:
+    - name: Prepare, authenticate, deploy and verify (reported per host)
+      block:
+        # ================================================================
+        # PHASE 1 - System preparation
+        # ================================================================
+        - name: Verify SSH connectivity and a usable Python interpreter
+          ansible.builtin.ping:
+
+        - name: Gather system facts
+          ansible.builtin.setup:
+            gather_subset:
+              - min
+
+        - name: Confirm the target is Amazon Linux 2023
+          ansible.builtin.assert:
+            that:
+              - ansible_facts['distribution'] == "Amazon"
+              - ansible_facts['distribution_major_version'] == "2023"
+            fail_msg: >-
+              {{ inventory_hostname }} is {{ ansible_facts['distribution'] }}
+              {{ ansible_facts['distribution_version'] }}, not Amazon Linux 2023.
+              This playbook only supports Amazon Linux 2023.
+            quiet: true
+
+        # ---------------------------------------------------------------- Docker
+        - name: Update DNF package metadata
+          ansible.builtin.dnf:
+            update_cache: true
+
+        - name: Install Docker if missing
+          ansible.builtin.dnf:
+            name: docker
+            state: present
+
+        - name: Enable and start Docker
+          ansible.builtin.service:
+            name: docker
+            state: started
+            enabled: true
+
+        - name: Optionally add the SSH user to the docker group
+          ansible.builtin.user:
+            name: "{{ ansible_user | default('ec2-user') }}"
+            groups: docker
+            append: true
+          when: add_ssh_user_to_docker_group | bool
+
+        - name: Collect service facts
+          ansible.builtin.service_facts:
+
+        - name: Verify the Docker service is running and enabled
+          ansible.builtin.assert:
+            that:
+              - ansible_facts['services']['docker.service']['state'] == "running"
+              - ansible_facts['services']['docker.service']['status'] == "enabled"
+            fail_msg: Docker is installed but docker.service is not running and enabled.
+            quiet: true
+
+        - name: Verify the Docker daemon answers
+          ansible.builtin.command: docker version --format '{% raw %}{{.Server.Version}}{% endraw %}'
+          register: docker_version
+          changed_when: false
+
+        # ================================================================
+        # PHASE 2 - AWS CLI and ECR
+        # ================================================================
+        # ---------------------------------------------------------------- AWS CLI v2
+        - name: Check for AWS CLI
+          ansible.builtin.command: aws --version
+          register: aws_cli_check
+          failed_when: false
+          changed_when: false
+
+        - name: Install AWS CLI v2 when it is missing
+          when: (aws_cli_check.rc != 0) or ('aws-cli/2' not in (aws_cli_check.stdout ~ aws_cli_check.stderr))
+          block:
+            - name: Install AWS CLI v2 from the Amazon Linux repository
+              ansible.builtin.dnf:
+                name: awscli-2
+                state: present
+          rescue:
+            - name: Install unzip for the official AWS CLI v2 installer
+              ansible.builtin.dnf:
+                name: unzip
+                state: present
+
+            - name: Download the official AWS CLI v2 bundle
+              ansible.builtin.get_url:
+                url: "https://awscli.amazonaws.com/awscli-exe-linux-{{ ansible_facts['architecture'] }}.zip"
+                dest: /tmp/awscliv2.zip
+                mode: "0644"
+
+            - name: Unpack the AWS CLI v2 bundle
+              ansible.builtin.unarchive:
+                src: /tmp/awscliv2.zip
+                dest: /tmp
+                remote_src: true
+
+            - name: Run the AWS CLI v2 installer
+              ansible.builtin.command: /tmp/aws/install --update --bin-dir /usr/bin --install-dir /usr/local/aws-cli
+              changed_when: true
+
+            - name: Remove the AWS CLI installer files
+              ansible.builtin.file:
+                path: "{{ item }}"
+                state: absent
+              loop:
+                - /tmp/awscliv2.zip
+                - /tmp/aws
+
+        - name: Verify AWS CLI v2 installation
+          ansible.builtin.command: aws --version
+          register: aws_cli_version
+          changed_when: false
+          failed_when: "'aws-cli/2' not in (aws_cli_version.stdout ~ aws_cli_version.stderr)"
+
+        # ---------------------------------------------------------------- IAM / ECR check
+        - name: Check that the EC2 instance role can obtain an ECR authorization token
+          ansible.builtin.command:
+            argv:
+              - aws
+              - ecr
+              - get-authorization-token
+              - --region
+              - "{{ aws_region }}"
+              - --query
+              - authorizationData[0].proxyEndpoint
+              - --output
+              - text
+          register: ecr_auth_check
+          failed_when: false
+          changed_when: false
+
+        - name: Fail with a clear message when the instance role cannot reach ECR
+          ansible.builtin.assert:
+            that: ecr_auth_check.rc == 0
+            fail_msg: >-
+              The instance cannot get an ECR authorization token. Check that the IAM role
+              FaceRecognitionEC2Role is attached to this instance, that its policy allows
+              ecr:GetAuthorizationToken, and that the instance can reach
+              ecr.{{ aws_region }}.amazonaws.com. AWS CLI said: {{ ecr_auth_check.stderr | trim }}
+            quiet: true
+
+        # ---------------------------------------------------------------- ECR login, pull, logout
+        - name: Record the image ID currently present on the host
+          ansible.builtin.command:
+            argv: [docker, image, inspect, "{{ ecr_image }}"]
+          register: image_before
+          failed_when: false
+          changed_when: false
+
+        - name: Authenticate to ECR, pull the image, and always log out
+          block:
+            - name: Log in to the private ECR registry using the instance role
+              ansible.builtin.shell: |
+                set -o pipefail
+                aws ecr get-login-password --region {{ aws_region }} |
+                  docker login --username AWS --password-stdin {{ ecr_registry }}
+              args:
+                executable: /bin/bash
+              no_log: true
+              changed_when: false
+
+            - name: Pull the requested image from ECR
+              ansible.builtin.command:
+                argv: [docker, pull, --quiet, "{{ ecr_image }}"]
+              register: docker_pull
+              changed_when: false
+
+          always:
+            - name: Log out of ECR
+              ansible.builtin.command:
+                argv: [docker, logout, "{{ ecr_registry }}"]
+              changed_when: false
+              failed_when: false
+
+        - name: Inspect the pulled image
+          ansible.builtin.command:
+            argv: [docker, image, inspect, "{{ ecr_image }}"]
+          register: image_after
+          changed_when: >-
+            image_before.rc != 0 or
+            (image_before.stdout | from_json | first).Id != (image_after.stdout | from_json | first).Id
+
+        - name: Remember the pulled image ID
+          ansible.builtin.set_fact:
+            pulled_image_id: "{{ (image_after.stdout | from_json | first).Id }}"
+
+        # ================================================================
+        # PHASE 3 - Application deployment
+        # ================================================================
+        # ---------------------------------------------------------------- registration data
+        # No Docker volume: registered faces live in Amazon S3 and the container restores them at
+        # start-up using the EC2 instance role (FaceRecognitionEC2Role) - no keys, nothing to mount.
+
+        # ---------------------------------------------------------------- container
+        - name: Inspect the existing application container
+          ansible.builtin.command:
+            argv: [docker, container, inspect, "{{ container_name }}"]
+          register: container_inspect
+          failed_when: false
+          changed_when: false
+
+        - name: Decide whether the container must be (re)created
+          ansible.builtin.set_fact:
+            existing_container: "{{ (container_inspect.stdout | from_json | first) if container_inspect.rc == 0 else {} }}"
+
+        - name: Compute the replacement decision
+          ansible.builtin.set_fact:
+            container_needs_replace: >-
+              {{ (existing_container | length == 0)
+                 or not (existing_container.State.Running | default(false))
+                 or ((existing_container.Config.Labels | default({}, true)).get('fr.deploy.fingerprint', '') != deploy_fingerprint) }}
+
+        - name: Remove the old application container (registration data lives in S3, nothing is lost)
+          ansible.builtin.command:
+            argv: [docker, rm, --force, "{{ container_name }}"]
+          when:
+            - container_needs_replace | bool
+            - existing_container | length > 0
+          changed_when: true
+
+        - name: Start the application container
+          ansible.builtin.command:
+            argv:
+              - docker
+              - run
+              - --detach
+              - --name
+              - "{{ container_name }}"
+              - --restart
+              - "{{ restart_policy }}"
+              - --publish
+              - "{{ app_bind_address }}:{{ app_port }}:{{ container_port }}"
+              - --env
+              - "FR_PORT={{ container_port }}"
+              - --env
+              - "FR_DATA_DIR={{ data_dir }}"
+              - --env
+              - "FR_S3_BUCKET={{ s3_bucket }}"
+              - --env
+              - "FR_S3_REGION={{ s3_region }}"
+              - --label
+              - "fr.deploy.fingerprint={{ deploy_fingerprint }}"
+              - "{{ ecr_image }}"
+          when: container_needs_replace | bool
+          changed_when: true
+
+        - name: Verify the container is running
+          ansible.builtin.command:
+            argv: [docker, container, inspect, "{{ container_name }}"]
+          register: container_final
+          changed_when: false
+          failed_when: not (container_final.stdout | from_json | first).State.Running
+
+        # ---------------------------------------------------------------- health
+        - name: Wait for the application health endpoint to return HTTP 200
+          ansible.builtin.uri:
+            url: "http://127.0.0.1:{{ app_port }}/health"
+            method: GET
+            status_code: 200
+            return_content: true
+            timeout: 5
+          register: health_result
+          until: (health_result.status | default(0)) == 200
+          retries: "{{ health_retries }}"
+          delay: "{{ health_delay }}"
+          changed_when: false
+
+        # ================================================================
+        # PHASE 4 - Nginx and Certbot installation
+        # ================================================================
+        - name: Install Nginx
+          ansible.builtin.dnf:
+            name: nginx
+            state: present
+
+        - name: Install Certbot and Nginx plugin
+          ansible.builtin.dnf:
+            name:
+              - certbot
+              - python3-certbot-nginx
+            state: present
+
+        # ================================================================
+        # PHASE 5 - Initial HTTP configuration
+        # ================================================================
+        - name: Create Let's Encrypt ACME webroot directory
+          ansible.builtin.file:
+            path: /var/www/letsencrypt
+            state: directory
+            owner: nginx
+            group: nginx
+            mode: "0755"
+
+        # follow: true -> a dangling live/ symlink counts as "no certificate", the same
+        # way the certbot task's `creates:` below evaluates it.
+        - name: Check whether the Let's Encrypt certificate already exists
+          ansible.builtin.stat:
+            path: "/etc/letsencrypt/live/{{ domain_name }}/fullchain.pem"
+            follow: true
+          register: letsencrypt_cert
+
+        # The HTTP-only bootstrap config is only needed until a certificate exists.
+        # Once it does, this task is skipped, so repeat runs never replace the live HTTPS
+        # config with it. If the certificate is ever missing while an HTTPS config is on
+        # disk, the bootstrap config is restored so `nginx -t` passes and certbot can run.
+        - name: Configure Nginx reverse proxy for Face Recognition
+          when: not letsencrypt_cert.stat.exists
+          ansible.builtin.copy:
+            dest: /etc/nginx/conf.d/face-recognition.conf
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              server {
+                  listen 80;
+                  server_name {{ domain_name }};
+
+                  location /.well-known/acme-challenge/ {
+                      root /var/www/letsencrypt;
+                  }
+
+                  location / {
+                      proxy_pass http://{{ app_bind_address }}:{{ app_port }};
+                      proxy_http_version 1.1;
+
+                      proxy_set_header Host $host;
+                      proxy_set_header X-Real-IP $remote_addr;
+                      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                      proxy_set_header X-Forwarded-Proto $scheme;
+                  }
+              }
+
+        - name: Test Nginx configuration
+          ansible.builtin.command: nginx -t
+          changed_when: false
+
+        - name: Enable and start Nginx
+          ansible.builtin.service:
+            name: nginx
+            state: started
+            enabled: true
+
+        # ================================================================
+        # PHASE 6 - Automatic HTTPS configuration
+        # ================================================================
+        - name: Obtain or renew Let's Encrypt certificate when required
+          ansible.builtin.command:
+            argv: >-
+              {{ ['certbot', 'certonly', '--webroot', '--webroot-path', '/var/www/letsencrypt',
+                  '--domain', domain_name]
+                 + (['--email', certbot_email] if (certbot_email | length) > 0
+                    else ['--register-unsafely-without-email'])
+                 + ['--agree-tos', '--non-interactive', '--keep-until-expiring'] }}
+          register: certbot_result
+          changed_when: false
+
+        # certbot-renew.timer renews the certificate on disk, but Nginx keeps serving the
+        # old one until it is reloaded. Certbot runs every executable in this directory
+        # after each successful renewal; the hook validates the config before reloading.
+        - name: Create Certbot deploy-hook directory
+          ansible.builtin.file:
+            path: /etc/letsencrypt/renewal-hooks/deploy
+            state: directory
+            owner: root
+            group: root
+            mode: "0755"
+
+        - name: Install Certbot deploy hook to validate and reload Nginx after renewal
+          ansible.builtin.copy:
+            dest: /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
+            owner: root
+            group: root
+            mode: "0755"
+            content: |
+              #!/bin/sh
+              # Managed by Ansible. Reload Nginx after a certificate renewal, but only
+              # if the configuration validates.
+              set -e
+              nginx -t
+              systemctl reload nginx
+
+        # One task covers both the HTTPS server block (cert paths) and the
+        # HTTP -> HTTPS redirect, because both live in the same conf file.
+        - name: Configure Nginx with HTTPS and HTTP redirect
+          ansible.builtin.copy:
+            dest: /etc/nginx/conf.d/face-recognition.conf
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              server {
+                  listen 80;
+                  server_name {{ domain_name }};
+
+                  location /.well-known/acme-challenge/ {
+                      root /var/www/letsencrypt;
+                  }
+
+                  location / {
+                      return 301 https://$host$request_uri;
+                  }
+              }
+
+              server {
+                  listen 443 ssl;
+                  server_name {{ domain_name }};
+
+                  ssl_certificate /etc/letsencrypt/live/{{ domain_name }}/fullchain.pem;
+                  ssl_certificate_key /etc/letsencrypt/live/{{ domain_name }}/privkey.pem;
+
+                  location / {
+                      proxy_pass http://{{ app_bind_address }}:{{ app_port }};
+                      proxy_http_version 1.1;
+
+                      proxy_set_header Host $host;
+                      proxy_set_header X-Real-IP $remote_addr;
+                      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                      proxy_set_header X-Forwarded-Proto $scheme;
+                  }
+              }
+
+        - name: Validate final Nginx configuration
+          ansible.builtin.command: nginx -t
+          changed_when: false
+
+        - name: Reload Nginx with HTTPS configuration
+          ansible.builtin.service:
+            name: nginx
+            state: reloaded
+            enabled: true
+
+        - name: Enable automatic Certbot renewal
+          ansible.builtin.systemd:
+            name: certbot-renew.timer
+            daemon_reload: true
+            enabled: true
+            state: started
+
+        # ================================================================
+        # PHASE 7 - Final verification and reporting
+        # ================================================================
+        # NEW: checks the certificate chain/name against domain_name, resolved to
+        # this host locally so it does not depend on public DNS or hairpin routing.
+        - name: Verify HTTPS endpoint
+          ansible.builtin.command:
+            argv:
+              - curl
+              - --silent
+              - --show-error
+              - --fail
+              - --output
+              - /dev/null
+              - --write-out
+              - "%{http_code}"
+              - --resolve
+              - "{{ domain_name }}:443:127.0.0.1"
+              - "https://{{ domain_name }}/health"
+          register: https_check
+          changed_when: false
+          failed_when: https_check.rc != 0 or https_check.stdout != '200'
+
+        # NEW: plain HTTP must answer 301 pointing at https://<domain>/
+        - name: Verify HTTP redirection
+          ansible.builtin.command:
+            argv:
+              - curl
+              - --silent
+              - --show-error
+              - --output
+              - /dev/null
+              - --write-out
+              - "%{http_code} %{redirect_url}"
+              - --resolve
+              - "{{ domain_name }}:80:127.0.0.1"
+              - "http://{{ domain_name }}/"
+          register: http_redirect_check
+          changed_when: false
+          failed_when: not (http_redirect_check.stdout.startswith('301 https://' ~ domain_name))
+
+        # NEW: timer must be both enabled and active
+        - name: Verify automatic renewal timer
+          ansible.builtin.command:
+            argv: [systemctl, "{{ item }}", certbot-renew.timer]
+          loop:
+            - is-enabled
+            - is-active
+          changed_when: false
+
+        - name: Record success for this host
+          ansible.builtin.set_fact:
+            deploy_status: SUCCESS
+            deploy_health: "{{ health_result.json | default(health_result.content | default('') | trim) }}"
+
+        - name: Report this host
+          ansible.builtin.debug:
+            msg:
+              - "SUCCESS on {{ inventory_hostname }} ({{ ansible_host | default(inventory_hostname) }})"
+              - "Image: {{ ecr_image }}"
+              - "Container: {{ container_name }}"
+              - "Health check: HTTP {{ health_result.status }} {{ deploy_health }}"
+              - "Registration data: Amazon S3 (restored by the container at start-up)"
+
+      rescue:
+        - name: Collect recent container logs for troubleshooting
+          ansible.builtin.command:
+            argv: [docker, logs, --tail, "30", "{{ container_name }}"]
+          register: failure_logs
+          failed_when: false
+          changed_when: false
+
+        - name: Record failure for this host
+          ansible.builtin.set_fact:
+            deploy_status: "FAILED at task '{{ ansible_failed_task.name | default('unknown', true) }}'"
+            deploy_reason: >-
+              {{ ansible_failed_result.msg | default(ansible_failed_result.stderr | default('see task output above')) }}
+
+        - name: Report the failure and fail this host
+          ansible.builtin.fail:
+            msg: >-
+              DEPLOYMENT FAILED on {{ inventory_hostname }} ({{ ansible_host | default(inventory_hostname) }}).
+              Task: {{ ansible_failed_task.name | default('unknown', true) }}.
+              Reason: {{ deploy_reason }}
+              {% if (failure_logs.stdout_lines | default([])) | length > 0 %}
+              Last container log lines: {{ failure_logs.stdout_lines | join(' | ') }}
+              {% endif %}
+
+- name: Deployment summary
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+
+  tasks:
+    - name: Report the result for every host in the face_recognition group
+      ansible.builtin.debug:
+        msg: >-
+          {{ item }} ({{ hostvars[item].ansible_host | default(item) }}):
+          {{ hostvars[item].deploy_status | default('NOT COMPLETED (unreachable or stopped before deployment)') }}
+      loop: "{{ groups['face_recognition'] | default([]) }}"
+
+    - name: Fail the run if any host did not finish successfully
+      ansible.builtin.assert:
+        that:
+          - groups['face_recognition'] | default([]) | length > 0
+          - groups['face_recognition'] | map('extract', hostvars, 'deploy_status') | map('default', 'NO') | unique | list == ['SUCCESS']
+        fail_msg: One or more hosts did not deploy successfully (or the face_recognition group is empty). See the per-host report above.
+        success_msg: All hosts deployed successfully.

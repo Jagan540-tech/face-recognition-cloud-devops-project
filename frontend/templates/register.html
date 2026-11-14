@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Register – Face Recognition{% endblock %}
+{% block content %}
+<div id="formView" class="card">
+  <h2>Register Person</h2>
+  <div class="fields">
+    <div><label for="name">Name</label><input id="name" type="text" placeholder="e.g. Athul" maxlength="60" autocomplete="off"></div>
+    <div><label for="role">Role</label><input id="role" type="text" placeholder="e.g. Student" maxlength="60" autocomplete="off"></div>
+  </div>
+  <div class="stage">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="overlay"></canvas>
+    <div class="guide hidden" id="guide"></div>
+    <div class="placeholder" id="placeholder">Camera is off. Click “Start Camera”.</div>
+  </div>
+  <div class="progress"><div id="bar"></div></div>
+  <div id="count" class="msg">0/{{ samples }}</div>
+  <div id="msg" class="msg"></div>
+  <div class="actions" style="justify-content:flex-start;margin-bottom:0">
+    <button class="btn" id="camBtn">Start Camera</button>
+    <button class="btn primary" id="capBtn" disabled>Start Capture</button>
+  </div>
+</div>
+
+<div id="doneView" class="card result hidden">
+  <h2>Registration Complete</h2>
+  <dl>
+    <dt>Name</dt><dd id="rName"></dd>
+    <dt>Role</dt><dd id="rRole"></dd>
+    <dt>Samples</dt><dd id="rSamples"></dd>
+  </dl>
+  <div class="actions" style="margin:0">
+    <a class="btn primary" href="/recognize">Start Recognition</a>
+    <a class="btn" href="/">Back to Home</a>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}<script>window.TARGET={{ samples }};</script>
+<script src="{{ url_for('static', filename='js/register.js') }}"></script>{% endblock %}

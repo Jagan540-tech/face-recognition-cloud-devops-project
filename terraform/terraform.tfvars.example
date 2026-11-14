@@ -1,0 +1,10 @@
+# Example variable definition file for Face Recognition infrastructure
+# Copy this file to terraform.tfvars to customize values locally:
+# cp terraform.tfvars.example terraform.tfvars
+
+aws_region           = "ap-south-1"
+instance_type        = "t3.small"
+key_name             = "aws-demo-key-july"
+security_group_id    = "sg-05b9179e2a38c02db"
+iam_instance_profile = "FaceRecognitionEC2Role"
+instance_name        = "Face-Recognition-Server"
