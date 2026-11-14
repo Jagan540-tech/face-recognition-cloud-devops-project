@@ -156,7 +156,7 @@ A match is determined using the configured threshold. Recognition accuracy depen
 ## 6. Project Structure
 
 ```text
-face-recognition-app/
+face-recognition-cloud-devops-project/
 │
 ├── .github/
 │   └── workflows/
@@ -227,7 +227,7 @@ face-recognition-app/
 
 ```bash
 git clone <YOUR_GITHUB_REPOSITORY_URL>
-cd face-recognition-app
+cd face-recognition-cloud-devops-project
 ```
 
 ### Create a Virtual Environment
@@ -488,8 +488,6 @@ The configuration does not allocate an Elastic IP.
 
 A replacement EC2 instance can receive a different public IP. If this happens, update the DNS record and the GitHub Actions `EC2_HOST` secret.
 
-If you configure the optional `EC2_KNOWN_HOSTS` secret with a pinned host key, update that value as well when the host identity changes.
-
 ---
 
 ## 12. Ansible Deployment
@@ -525,16 +523,13 @@ Nginx forwards external requests to the application.
 
 ### SSH Host-Key Checking
 
-Ansible has SSH host-key checking enabled.
+Ansible SSH host-key checking is disabled in the current project configuration to simplify connections when EC2 instances are frequently replaced.
 
-The deployment workflow supports two ways to populate `known_hosts`:
+This avoids manually accepting a new SSH host key whenever a replacement instance is created.
 
-1. Use the optional GitHub Actions secret `EC2_KNOWN_HOSTS` containing trusted host-key entries.
-2. If the secret is not configured, the workflow uses `ssh-keyscan` to retrieve the host key before connecting.
+The deployment workflow prepares SSH credentials automatically on the GitHub Actions runner.
 
-The second method provides strict checking against the retrieved key during the connection, but it does not independently authenticate the key on first retrieval.
-
-For stronger host authentication, configure a trusted host-key entry through `EC2_KNOWN_HOSTS`.
+**Security consideration:** Disabling host-key checking means the SSH client does not independently verify the EC2 server's identity. This reduces protection against man-in-the-middle attacks. For production environments, use verified host keys and enable strict host-key checking.
 
 ---
 
@@ -594,23 +589,13 @@ Configure these secrets under:
 
 The SSH private key is a long-lived deployment credential. Store it only as a GitHub secret and protect access to the repository.
 
-### Optional GitHub Secrets
-
-| Secret | Purpose |
-|---|---|
-| `EC2_KNOWN_HOSTS` | Trusted SSH host-key entries |
-
-When this optional secret is absent, the workflow uses `ssh-keyscan` to populate `known_hosts`.
-
 ### Optional GitHub Variables
 
 | Variable | Purpose |
 |---|---|
-| `EC2_SECURITY_GROUP_ID` | Enables the workflow's temporary SSH security-group access rule |
-| `APP_URL` | Public application URL used for deployment verification |
-| `CERTBOT_EMAIL` | Email address supplied to Certbot for HTTPS setup |
-
-Only configure these optional values when the corresponding workflow functionality is required.
+| `EC2_SECURITY_GROUP_ID` | Enables temporary SSH access for the GitHub Actions runner |
+| `APP_URL` | Public application URL used for post-deployment verification |
+| `CERTBOT_EMAIL` | Email address supplied to Certbot when HTTPS setup is required |
 
 ### Temporary SSH Access
 
@@ -627,8 +612,7 @@ If Terraform replaces the EC2 instance:
 1. Obtain the replacement instance's public IP or DNS name.
 2. Update the GitHub Actions `EC2_HOST` secret.
 3. Update the DNS record if required.
-4. Update `EC2_KNOWN_HOSTS` only if you use the optional pinned-host-key configuration.
-5. Re-run the deployment workflow.
+4. Re-run the deployment workflow.
 
 If you reuse the same EC2 key pair, the SSH private key does not need to change. Update `EC2_SSH_PRIVATE_KEY` only if the key pair changes.
 
