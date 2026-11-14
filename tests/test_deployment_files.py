@@ -82,7 +82,7 @@ def test_main_github_policies_have_no_placeholders_and_only_the_optional_one_has
         assert "REPLACE" not in read(f"iam/{name}"), f"{name} must be applicable exactly as it is"
 
     # GitHub repository uses immutable OIDC subject claims.
-    expected_subject = "repo:Jagan540-tech@205582675/face-recognition-app@1418509600:ref:refs/heads/main"
+    expected_subject = "repo:Jagan540-tech@205582675/face-recognition-cloud-devops-project@1457500621:ref:refs/heads/main"
     assert expected_subject in read("iam/GitHubActionsOIDC.trust.json")
 
     assert "ecr:PutImage" in read("iam/GitHubActionsDeploy.policy.json")

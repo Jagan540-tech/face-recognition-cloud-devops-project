@@ -66,7 +66,9 @@ def status(inst):
 def test_empty_bucket_starts_with_no_registered_people(tmp_path, monkeypatch, s3):
     inst = boot(tmp_path, monkeypatch, s3, "i1")
     d = status(inst)
-    assert d["registered_users"] == 0 and d["people"] == [] and d["engine_ready"] is True
+    assert d["registered_users"] == 0
+    assert d["engine_ready"] is True
+    assert "people" not in d
     assert inst.client.get("/health").status_code == 200
     assert recognize(inst, 1)["recognized"] is False
 
@@ -99,7 +101,8 @@ def test_s3_is_downloaded_before_the_embedding_store_loads(tmp_path, monkeypatch
 
     second = boot(tmp_path, monkeypatch, s3, "i2")
     assert events[:2] == ["s3.restore", "store.load"]
-    assert status(second)["people"] == ["Athul"]
+    assert status(second)["registered_users"] == 1
+    assert recognize(second, 1)["name"] == "Athul"
 
 
 def test_env_configured_bucket_is_used_when_app_builds_its_own_store(tmp_path, monkeypatch, s3):
@@ -115,7 +118,7 @@ def test_env_configured_bucket_is_used_when_app_builds_its_own_store(tmp_path, m
     monkeypatch.setattr(config, "KNOWN_FACES_DIR", root / "known")
     monkeypatch.setattr(config, "LEGACY_DIR", root / "legacy")
     client = app_module.create_app(engine=FakeEngine()).test_client()
-    assert client.get("/api/status").get_json()["people"] == ["Athul"]
+    assert client.get("/api/status").get_json()["registered_users"] == 1
 
 
 # ------------------------------------------------------------------ S3 never touched by tests / imports
@@ -173,7 +176,8 @@ def test_success_is_only_reported_after_the_embeddings_reached_s3(tmp_path, monk
     s3.heal()                                                        # S3 is back: finish can be retried
     r = inst.client.post("/api/register", json={**body, "finish": True})
     assert r.status_code == 200 and r.get_json()["success"] is True
-    assert status(inst)["people"] == ["Athul"] and "embeddings/embeddings.npz" in s3.objects
+    assert status(inst)["registered_users"] == 1
+    assert "embeddings/embeddings.npz" in s3.objects
     assert recognize(inst, 7)["name"] == "Athul"
 
 
@@ -222,7 +226,8 @@ def test_ec2_replacement_five_people_survive_and_are_recognised(tmp_path, monkey
     new = boot(tmp_path, monkeypatch, s3, "new-instance")            # fresh disk, same bucket
     d = status(new)
     assert d["registered_users"] == 5
-    assert d["people"] == sorted(n for n, _, _ in PEOPLE)
+    assert d["engine_ready"] is True
+    assert "people" not in d
     for name, role, identity in PEOPLE:
         face = recognize(new, identity)
         assert (face["recognized"], face["name"], face["role"]) == (True, name, role)
@@ -244,7 +249,7 @@ def test_reregistering_a_name_replaces_it_in_s3_too(tmp_path, monkeypatch, s3):
     register(inst.client, inst.engine, "Athul", "Student", 1)
     register(inst.client, inst.engine, "Athul", "Lead", 8)
     after = boot(tmp_path, monkeypatch, s3, "i2")
-    assert status(after)["people"] == ["Athul"]
+    assert status(after)["registered_users"] == 1
     assert recognize(after, 8)["role"] == "Lead" and recognize(after, 1)["recognized"] is False
 
 
