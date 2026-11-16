@@ -70,30 +70,11 @@ The Python test and Docker build jobs run independently as part of CI. The image
 
 Application registration data is stored in Amazon S3 so it can survive EC2 instance replacement.
 
-```mermaid
-flowchart TD
-    A[Developer pushes code to GitHub]
-    A --> B[GitHub Actions]
+The following diagram illustrates the complete project architecture, including the GitHub Actions CI/CD pipeline, AWS infrastructure, Terraform provisioning, Ansible deployment, Docker-based application hosting, face recognition workflow, and Amazon S3 persistence and recovery.
 
-    B --> C[Python Tests]
-    B --> D[Docker Build and Smoke Test]
-
-    C --> E[Successful CI Checks]
-    D --> E
-
-    E --> F[GitHub OIDC Authentication]
-    F --> G[Push Docker Image to Amazon ECR]
-    G --> H[Ansible Deployment]
-
-    H --> I[Amazon EC2]
-    I --> J[Nginx Reverse Proxy]
-    J --> K[Docker Container]
-    K --> L[Flask Application]
-
-    L <--> M[Amazon S3]
-
-    N[Browser] --> J
-```
+<p align="center">
+  <img src="docs/images/architecture.png" alt="Face Recognition Cloud and DevOps Project Architecture" width="100%">
+</p>
 
 ### Deployment Flow
 
