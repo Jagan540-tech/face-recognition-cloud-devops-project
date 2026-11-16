@@ -91,6 +91,18 @@ The following diagram illustrates the complete project architecture, including t
 
 ---
 
+## Application Screenshot
+
+### Home Page
+
+The following screenshot shows the main interface of the Face Recognition application.
+
+<p align="center">
+  <img src="docs/images/home-page.png" alt="Face Recognition Application Home Page" width="100%">
+</p>
+
+---
+
 ## 4. Application Endpoints
 
 | Endpoint | Method | Description |
